@@ -1,8 +1,39 @@
 from openai import OpenAI
+from zhipuai import ZhipuAI
 from typing import Generator, Union
 import os
-
+import requests
+from PIL import Image
 chat_model = "THUDM/GLM-4-32B-0414"
+img_model = "cogview-4-250304"
+
+def get_loss(Image1:Image, Image2:Image) -> float:
+    """
+    计算两张图片之间的损失
+    """
+    # 将图片转换为RGB模式
+    Image1 = Image1.convert("RGB")
+    Image2 = Image2.convert("RGB")
+    
+    # 获取图片的像素数据
+    pixels1 = list(Image1.getdata())
+    pixels2 = list(Image2.getdata())
+    
+    # 计算损失
+    loss = sum(abs(p1[0]- p2[0])+abs(p1[1]-p2[1])+abs(p1[2]-p2[2]) for p1, p2 in zip(pixels1, pixels2)) / len(pixels1)
+    
+    return loss
+
+def get_image_generate(prompt: str, max_tokens: int = 2000) -> Image:
+    client = ZhipuAI(api_key="06d3a1bc08516b363099cd9826143c8d.FjukLsi1czNirl4d") # 请填写您自己的APIKey
+    
+    response = client.images.generations(
+        model=img_model, #填写需要调用的模型编码
+        prompt=prompt,
+    )
+    url=response.data[0].url
+    image = Image.open(requests.get(url, stream=True).raw)
+    return image
 
 def get_client():
     silicon_api_key = os.getenv("SILICON_API_KEY")
