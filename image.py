@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 from PIL import Image, ImageTk
 from src.call_llm import get_image_generate, get_loss
-from src.loss import get_loss
+from src.loss import calculate_loss_with_image, calculate_loss_with_string
 import os
 
 class ImagePromptGame:
@@ -70,6 +70,7 @@ class ImagePromptGame:
         self.best_loss_label.pack(side=tk.RIGHT, padx=10)
         self.best_prompt_label = tk.Label(score_frame, text="最佳提示词: --", font=("Arial", 11), bg="#e1e8ed", fg="#16a085")
         self.best_prompt_label.pack(side=tk.RIGHT, padx=10)
+        
         # Current loss display with styling
         self.loss_frame = tk.Frame(root, bg="#f0f4f7", padx=20, pady=5)
         self.loss_frame.pack(fill=tk.X)
@@ -89,7 +90,6 @@ class ImagePromptGame:
         # Target image section
         target_section = tk.Frame(self.image_frame, bg="#f0f4f7")
         target_section.grid(row=0, column=0, padx=20)
-        
         self.target_label = tk.Label(target_section, text="目标图片", font=("Arial", 12, "bold"), bg="#f0f4f7")
         self.target_label.pack(pady=(0, 5))
         
@@ -149,14 +149,13 @@ class ImagePromptGame:
         )
         if not file_path:
             return
-            
         try:
             self.target_image = Image.open(file_path)
             self.display_image(self.target_image, self.target_canvas)
             self.display_image(Image.open('./black.png'), self.generated_canvas)
             # Reset game state
-            self.loss_label.config(text="当前 Loss: --")
-            self.generated_canvas.config(image='')
+            self.loss_label.config(text="当前 图像Loss: -- 当前 语义Loss: --")
+            self.generated_canvas.config(image='')  # Reset canvas
             self.status_bar.config(text=f"已加载图片: {os.path.basename(file_path)}")
             self.best_loss = float('inf')
             self.attempts = 0
@@ -172,50 +171,57 @@ class ImagePromptGame:
         if not self.target_image:
             self.status_bar.config(text="错误: 请先加载目标图片")
             return
-        self.status_bar.config(text=f"正在生成图片，请稍候...")
-        self.root.update()
+        self.status_bar.config(text=f"正在生成图片，请稍候...")  # Update status
+        self.root.update()  # Update the UI to reflect changes immediately
+        
         try:
-            # Call the image generation API
-            if prompt=='':
-                self.generated_image = Image.open('./black.png')
+            # Generate the image using the prompt
+            if prompt == '':
+                self.generated_image = Image.open('./black.png')  # Fallback for empty prompts
             else:
-                self.generated_image = get_image_generate(prompt)
-            self.display_image(self.generated_image, self.generated_canvas)
+                self.generated_image = get_image_generate(prompt)  # Call the existing image generation function
             
-            # Calculate loss
-            loss = get_loss(self.target_image, self.generated_image)
-            # Update attempt counter
+            # Display the generated image on the canvas
+            self.display_image(self.generated_image, self.generated_canvas)
+
+            # Calculate losses
+            img_loss = calculate_loss_with_image(self.target_image, self.generated_image)  # Image loss
+            str_loss = calculate_loss_with_string(prompt, self.target_image)  # Semantic loss
+
+            # Update attempts and display the losses
             self.attempts += 1
             self.attempts_label.config(text=f"尝试次数: {self.attempts}")
             
-            # Update loss display
-            self.loss_label.config(text=f"当前 Loss: {loss:.4f}")
+            # Update the current loss label to show both image and semantic losses
+            self.loss_label.config(text=f"当前图像 Loss: {img_loss:.4f}  当前语义 Loss: {str_loss:.4f}")
             
             # Update best loss if applicable
-            if loss < self.best_loss:
-                self.best_loss = loss
-                self.best_loss_label.config(text=f"最佳 Loss: {loss:.4f}")
+            total_loss = img_loss*0.2 + str_loss  # Total loss combining both
+            if total_loss < self.best_loss:
+                self.best_loss = total_loss
+                self.best_loss_label.config(text=f"最佳 Loss: {total_loss:.4f}")
                 self.best_prompt_label.config(text=f"最佳提示词: {prompt}")
                 self.generated_image.save(f"best_image_{self.attempts}.png")
                 self.status_bar.config(text=f"已保存最佳图片: best_image_{self.attempts}.png")
                 with open(f"best_prompt_{self.attempts}.txt", "w") as f:
                     f.write(prompt)
-                color = self.get_loss_color(loss)
-                self.draw_loss_indicator(color)
                 
-                if loss < 0.3:
-                    self.status_bar.config(text=f"太棒了！你找到了一个非常接近的匹配 (Loss: {loss:.4f})")
+                color = self.get_loss_color(total_loss)
+                self.draw_loss_indicator(color)
+
+                if total_loss < 0.3:
+                    self.status_bar.config(text=f"太棒了！你找到了一个非常接近的匹配 (Loss: {total_loss:.4f})")
                 else:
-                    self.status_bar.config(text=f"已生成图片 (Loss: {loss:.4f})")
+                    self.status_bar.config(text=f"已生成图片 (Loss: {total_loss:.4f})")
             else:
-                self.status_bar.config(text=f"已生成图片 (Loss: {loss:.4f}, 非最佳)")
+                self.status_bar.config(text=f"已生成图片 (Loss: {total_loss:.4f}, 非最佳)")
                 self.draw_loss_indicator("orange")
+    
         except Exception as e:
             self.status_bar.config(text=f"生成错误: {str(e)}")
 
     def display_image(self, pil_image, canvas_label):
         """Display an image on the specified canvas"""
-        # Resize the image to fit the canvas while maintaining aspect ratio
         width, height = pil_image.size
         max_size = 400
         
@@ -228,28 +234,25 @@ class ImagePromptGame:
             
         resized = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
         
-        # Create a new blank image with the canvas size
         display_img = Image.new("RGB", (max_size, max_size), color="white")
         
-        # Paste the resized image in the center
         x_offset = (max_size - new_width) // 2
         y_offset = (max_size - new_height) // 2
         display_img.paste(resized, (x_offset, y_offset))
         
-        # Convert to Tkinter PhotoImage and display
         tk_image = ImageTk.PhotoImage(display_img)
         canvas_label.img = tk_image
         canvas_label.config(image=tk_image)
 
     def get_loss_color(self, loss):
         """Return a color based on the loss value"""
-        if loss < 0.2:
+        if loss < 0.6:
             return "#27ae60"  # Green (very good)
-        elif loss < 0.3:
+        elif loss < 0.8:
             return "#2ecc71"  # Light green (good)
-        elif loss < 0.4:
+        elif loss < 1.0:
             return "#f39c12"  # Orange (moderate)
-        elif loss < 0.5:
+        elif loss < 1.2:
             return "#e67e22"  # Dark orange (poor)
         else:
             return "#e74c3c"  # Red (bad)
